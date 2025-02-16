@@ -1,10 +1,13 @@
 import asyncio
+import base64
+import json
 import logging
+import os.path
 
 import redis
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.fsm.storage.base import DefaultKeyBuilder
+from aiogram.fsm.storage.base import DefaultKeyBuilder, StorageKey
 from aiogram.fsm.storage.redis import RedisStorage
 from aiogram.types import BotCommand
 
@@ -40,8 +43,14 @@ async def cmd_start(message: types.Message):
 
 
 async def on_shutdown():
-    async with open('file.txt', 'w') as file:
-        await file.write('dwedw')
+    storage_key = StorageKey(bot_id=bot.id, user_id=cfg.ADMIN_USER_ID, chat_id=cfg.ADMIN_USER_ID)
+    user_data = await storage.get_data(storage_key)
+
+    with open('save', 'w') as file:
+        json_data = json.dumps(user_data)
+        encoded_text = base64.b64encode(json_data.encode()).decode()
+        file.write(encoded_text)
+
     await bot.session.close()
 
 
@@ -51,6 +60,18 @@ async def main():
             BotCommand(command="menu", description="Main menu"),
         ]
         await bot.set_my_commands(commands)
+
+        if os.path.exists('save'):
+            with open('save', 'r') as file:
+                encoded_text = file.read()
+                decoded_text = base64.b64decode(encoded_text.encode()).decode()
+                user_data = json.loads(decoded_text)
+        else:
+            user_data = None
+
+        storage_key = StorageKey(bot_id=bot.id, user_id=cfg.ADMIN_USER_ID, chat_id=cfg.ADMIN_USER_ID)
+        await storage.set_data(storage_key, user_data)
+
         await dp.start_polling(bot)
     except Exception as e:
         logging.error(f"Ошибка: {e}")
