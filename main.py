@@ -4,30 +4,31 @@ import json
 import logging
 import os.path
 
-import redis
-from aiogram import Bot, Dispatcher, types
+from aiogram import Dispatcher, types
 from aiogram.filters import Command
-from aiogram.fsm.storage.base import DefaultKeyBuilder, StorageKey
-from aiogram.fsm.storage.redis import RedisStorage
+from aiogram.fsm.storage.base import StorageKey
 from aiogram.types import BotCommand
 
+from base.bot_init import bot
+from base.scheduler_init import scheduler
+from base.storage_init import storage
 from config import cfg
+from scheduler.posts import create_post_task
 from utils.keyboards import main_menu_keyboard
 
 from handlers.post import router as posts_router
 from handlers.timer import router as timers_router
+from handlers.chats import router as chats_router
 
-redis_client = redis.asyncio.Redis(host=cfg.REDIS_HOST, port=cfg.REDIS_PORT, decode_responses=True)
-storage = RedisStorage(redis=redis_client, key_builder=DefaultKeyBuilder(with_bot_id=True))
 
 logging.basicConfig(level=logging.INFO)
 
-bot = Bot(token=cfg.BOT_TOKEN)
 dp = Dispatcher(storage=storage)
 
 dp.include_routers(
     posts_router,
     timers_router,
+    chats_router
 )
 
 
@@ -54,6 +55,21 @@ async def on_shutdown():
     await bot.session.close()
 
 
+async def start_scheduler(user_data: dict) -> None:
+    scheduler.start()
+
+    if 'posts' in user_data and len(user_data['posts']) > 0:
+        to_del = []
+        for key, value in user_data['posts'].items():
+            if value['period_time'] <= 0:
+                to_del.append(key)
+            else:
+                await create_post_task(key, value['frequency_time'])
+
+        for key in to_del:
+            del user_data['posts'][key]
+
+
 async def main():
     try:
         commands = [
@@ -68,6 +84,8 @@ async def main():
                 user_data = json.loads(decoded_text)
         else:
             user_data = None
+
+        await start_scheduler(user_data)
 
         storage_key = StorageKey(bot_id=bot.id, user_id=cfg.ADMIN_USER_ID, chat_id=cfg.ADMIN_USER_ID)
         await storage.set_data(storage_key, user_data)

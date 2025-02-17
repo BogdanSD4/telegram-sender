@@ -1,0 +1,28 @@
+app = "TG_Sender"
+primary_region = "cdg" # Выбери регион (cdg - Париж)
+
+[build]
+  dockerfile = "Dockerfile"  # Если в docker-compose.yml указан Dockerfile
+
+[deploy]
+  release_command = "docker-compose up -d"  # Поднимаем сервисы через docker-compose
+
+#[env]
+#  TELEGRAM_TOKEN = $"your_bot_token"
+#  DATABASE_URL = "postgres://user:password@db:5432/dbname"
+
+[experimental]
+  allowed_public_ports = []
+  auto_rollback = true
+
+[[services]]
+  internal_port = 8080
+  protocol = "tcp"
+
+  [[services.ports]]
+    handlers = ["http"]
+    port = 80
+
+  [[services.ports]]
+    handlers = ["tls", "http"]
+    port = 443

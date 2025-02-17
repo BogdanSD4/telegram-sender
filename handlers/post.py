@@ -2,7 +2,8 @@ from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton
 
-from handlers.timer import get_time
+from handlers.timer import get_time, create_time_data
+from scheduler.posts import delete_post_task
 from utils.keyboards import select_time_keyboard
 from utils.states import PostStats
 
@@ -49,7 +50,9 @@ async def wait_post(message: Message, state: FSMContext):
                 message_id=message.message_id
             )
 
+        create_time_data(data, True)
         message_name = data['selected_post']
+
         data['posts'][message_name] = {
             'text': message.text,
             'period': {
@@ -75,7 +78,7 @@ async def wait_post(message: Message, state: FSMContext):
 
         timer_message = await message.answer(
             text=get_time(post['period']),
-            reply_markup=select_time_keyboard()
+            reply_markup=select_time_keyboard(data['time_data']['amount'])
         )
         data['timer_message_id'] = timer_message.message_id
 
@@ -87,10 +90,24 @@ async def wait_post(message: Message, state: FSMContext):
 async def main_posts(query: CallbackQuery, state: FSMContext):
     data = await state.get_data()
 
-    if 'posts' in data:
+    posts = {}
+    del_posts = []
+    if 'posts' in data and len(data['posts']) > 0:
+        for key, value in data['posts'].items():
+            if 'create' in value:
+                posts[key] = value
+            else:
+                del_posts.append(key)
+
+    for key in del_posts:
+        del data['posts'][key]
+
+    if len(posts) > 0:
         keyword = [
-            [InlineKeyboardButton(text=name, callback_data=f'post_{name}')]
-            for name in data['posts'].keys()
+            [
+                InlineKeyboardButton(text=name, callback_data=f'post_{name}'),
+                InlineKeyboardButton(text='Delete post', callback_data=f'delete_post_{name}')
+            ]for name in posts.keys()
         ]
     else:
         keyword = [[InlineKeyboardButton(text="No posts", callback_data=f'no_posts')]]
@@ -99,3 +116,20 @@ async def main_posts(query: CallbackQuery, state: FSMContext):
         text='Your posts:',
         reply_markup=InlineKeyboardMarkup(inline_keyboard=keyword)
     )
+
+
+@router.callback_query(F.data.startswith("delete_post_"))
+async def delete_post(query: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    post_name = query.data.replace('delete_post_', '')
+
+    if 'posts' in data and post_name in data['posts']:
+        del data['posts'][post_name]
+
+        delete_post_task(post_name)
+
+        await query.message.answer(
+            text=f'Post {post_name} delete successfully'
+        )
+
+    await state.set_data(data)
