@@ -8,13 +8,15 @@ from aiogram.types import ChatMemberUpdated, CallbackQuery, InlineKeyboardButton
 from base.storage_init import storage
 from config import cfg
 from base.bot_init import bot
+from sessions.user_controller import get_user_chats
+from utils.keyboards import chats_menu_keyboard
+from utils.schemas import State
 
 router = Router()
 
 
 @router.my_chat_member()
 async def my_chat_member_handler(update: ChatMemberUpdated, state: FSMContext):
-    logging.info('dfg')
     storage_key = StorageKey(bot_id=bot.id, user_id=cfg.ADMIN_USER_ID, chat_id=cfg.ADMIN_USER_ID)
     user_data = await storage.get_data(storage_key)
 
@@ -51,21 +53,34 @@ async def my_chat_member_handler(update: ChatMemberUpdated, state: FSMContext):
 
 @router.callback_query(F.data == 'main_chats')
 async def get_chats(query: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
+    data = State(await state.get_data())
 
-    if 'chats' in data and len(data['chats']) > 0:
-        keyword = [
-            [
-                InlineKeyboardButton(text=value['name'], callback_data=f'none'),
-                InlineKeyboardButton(text='Delete chat', callback_data=f'delete_chat_{key}'),
-            ] for key, value in data['chats'].items()
-        ]
-    else:
-        keyword = [[InlineKeyboardButton(text="No chats", callback_data=f'no_posts')]]
+    if not data.selected_user.chats:
+        data.selected_user.chats = await get_user_chats(data.selected_user_name)
+
+    await state.set_data(data.dict())
+    await query.message.answer(
+        text='Your chats:',
+        reply_markup=chats_menu_keyboard(data)
+    )
+
+
+@router.callback_query(F.data == 'reload_chats')
+async def reload_chats(query: CallbackQuery, state: FSMContext):
+    data = State(await state.get_data())
+
+    data.selected_user.chats = await get_user_chats(data.selected_user_name)
+
+    await state.set_data(data.dict())
+
+    await query.bot.delete_message(
+        chat_id=query.from_user.id,
+        message_id=query.message.message_id
+    )
 
     await query.message.answer(
         text='Your chats:',
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyword)
+        reply_markup=chats_menu_keyboard(data)
     )
 
 

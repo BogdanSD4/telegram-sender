@@ -2,11 +2,13 @@ import logging
 from datetime import timedelta
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, ReplyKeyboardMarkup
 
 from scheduler.posts import create_post_task
 from utils.keyboards import select_time_keyboard, main_menu_keyboard
+from utils.schemas import State
 from utils.states import PostStats
 
 
@@ -21,113 +23,99 @@ def get_time(data: dict):
             f"Minute: {data['minute']}")
 
 
-def create_time_data(data: dict, new: bool = False):
-    if 'time_data' not in data or new:
-        data['time_data'] = {
-            'year': 0,
-            'month': 0,
-            'day': 0,
-            'hour': 0,
-            'minute': 0,
-            'amount': 1
-        }
-
-
 def get_seconds_from_time_data(data: dict):
     days = data['year'] * 365 + data['month'] * 30 + data['day']
     interval = timedelta(days=days, hours=data['hour'], minutes=data['minute'])
+    logging.info(interval.total_seconds())
     return interval.total_seconds()
 
 
 @router.callback_query(F.data.startswith('amount_'))
 async def amount_callback(query: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    create_time_data(data)
+    data = State(await state.get_data())
 
     event = query.data.replace('amount_', '')
 
-    time_data = data['time_data']
+    time_data = data.selected_user.time_data
     if event == 'next':
-        time_data['amount'] += 1
-    elif event == 'previous' and time_data['amount'] > 1:
-        time_data['amount'] -= 1
+        time_data.amount += 1
+    elif event == 'previous' and time_data.amount > 1:
+        time_data.amount -= 1
 
     await query.bot.edit_message_text(
         chat_id=query.from_user.id,
         message_id=query.message.message_id,
-        text=get_time(time_data),
-        reply_markup=select_time_keyboard(time_data['amount'])
+        text=get_time(time_data.dict()),
+        reply_markup=select_time_keyboard(time_data.amount)
     )
 
-    await state.set_data(data)
+    await state.set_data(data.dict())
 
 
 @router.callback_query(F.data.startswith('next_'))
 async def next_time(query: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    create_time_data(data)
+    data = State(await state.get_data())
 
-    if 'selected_post' in data:
+    post = data.selected_user.selected_post
+    if post:
         time = query.data.replace('next_', '')
-        time_data = data['time_data']
-        time_data[time] += time_data['amount']
+        time_data = data.selected_user.time_data
+        time_data.sum(time, time_data.amount)
 
-        await query.bot.edit_message_text(
-            chat_id=query.from_user.id,
-            message_id=query.message.message_id,
-            text=get_time(time_data),
-            reply_markup=select_time_keyboard(time_data['amount'])
-        )
+        try:
+            await query.bot.edit_message_text(
+                chat_id=query.from_user.id,
+                message_id=query.message.message_id,
+                text=get_time(time_data.dict()),
+                reply_markup=select_time_keyboard(time_data.amount)
+            )
+        except TelegramBadRequest:
+            pass
 
-        await state.set_data(data)
+        await state.set_data(data.dict())
 
 
 @router.callback_query(F.data.startswith('previous_'))
 async def previous_time(query: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    create_time_data(data)
+    data = State(await state.get_data())
 
-    if 'selected_post' in data:
+    post = data.selected_user.selected_post
+    if post:
         time = query.data.replace('previous_', '')
-        time_data = data['time_data']
-        if time_data[time] > 0:
-            time_data[time] -= time_data['amount']
-            if time_data[time] < 0:
-                time_data[time] = 0
+        time_data = data.selected_user.time_data
+        time_data.sum(time, -time_data.amount)
 
+        try:
             await query.bot.edit_message_text(
                 chat_id=query.from_user.id,
                 message_id=query.message.message_id,
-                text=get_time(time_data),
-                reply_markup=select_time_keyboard(time_data['amount'])
+                text=get_time(time_data.dict()),
+                reply_markup=select_time_keyboard(time_data.amount)
             )
+        except TelegramBadRequest:
+            pass
 
-        await state.set_data(data)
+        await state.set_data(data.dict())
 
 
 @router.callback_query(F.data == 'save_time')
 async def save_time(query: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
+    data = State(await state.get_data())
     state_data = await state.get_state()
 
-    if 'selected_post' in data and 'time_data' in data:
-        post_name = data['selected_post']
-        post = data['posts'][post_name]
+    post = data.selected_user.selected_post
+    time_data = data.selected_user.time_data
 
-        total_seconds = get_seconds_from_time_data(data['time_data'])
+    if post and time_data:
+        total_seconds = get_seconds_from_time_data(time_data.dict())
         if total_seconds == 0:
             return await query.message.answer(
                 text="Time not set",
             )
 
         if state_data == PostStats.post_period:
-            post['period_time'] = total_seconds
-            post_period = post['period']
-
-            for key, value in data['time_data'].items():
-                if key in ['amount']:
-                    continue
-                post_period[key] = value
+            post.period_time = total_seconds
+            post.period.update(time_data.dict())
 
             await query.bot.delete_message(
                 chat_id=query.from_user.id,
@@ -136,28 +124,23 @@ async def save_time(query: CallbackQuery, state: FSMContext):
 
             await query.message.answer(text=f"Post period has been saved")
             await query.message.answer(text='Select the frequency of sending posts')
-
-            create_time_data(data, True)
-            await query.message.answer(
-                text=get_time(post['frequency']),
-                reply_markup=select_time_keyboard(data['time_data']['amount'])
-            )
-
             await state.set_state(PostStats.post_frequency)
 
+            time_data.reset()
+            await query.message.answer(
+                text=get_time(post.frequency.dict()),
+                reply_markup=select_time_keyboard(time_data.amount)
+            )
+
         elif state_data == PostStats.post_frequency:
-            if total_seconds > post['period_time']:
+            logging.info(f"Period time: {post.period_time}")
+            if total_seconds > post.period_time:
                 return await query.message.answer(
                     text='Post frequency cannot be more than period',
                 )
 
-            post['frequency_time'] = total_seconds
-            post_frequency = post['frequency']
-
-            for key, value in data['time_data'].items():
-                if key in ['amount']:
-                    continue
-                post_frequency[key] = value
+            post.frequency_time = total_seconds
+            post.frequency.update(time_data.dict())
 
             await query.bot.delete_message(
                 chat_id=query.from_user.id,
@@ -170,11 +153,11 @@ async def save_time(query: CallbackQuery, state: FSMContext):
                 reply_markup=main_menu_keyboard()
             )
 
-            post['create'] = True
-            await create_post_task(post_name, total_seconds)
+            post.create = True
+            await create_post_task(data.selected_user_name, data.selected_user.selected_post_name, total_seconds)
 
-            del data['time_data']
-            del data['selected_post']
+            data.selected_user.selected_post_name = None
             await state.set_state(None)
 
-        await state.set_data(data)
+    logging.info(f"Save: {data.dict()}")
+    await state.set_data(data.dict())
